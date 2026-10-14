@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include "SceTypes.hpp"
@@ -13,7 +14,14 @@ int APS5_VABI scePthreadAttrDestroy(PthreadAttr* attr);
 int APS5_VABI scePthreadAttrSetstacksize(PthreadAttr* attr, std::size_t stacksize);
 int APS5_VABI scePthreadAttrSetstack(PthreadAttr* attr, void* addr, std::size_t size);
 int APS5_VABI scePthreadAttrSetsolosched(PthreadAttr* attr, int solosched);
+int APS5_VABI scePthreadAttrGetaffinity(const PthreadAttr* attr, KernelCpumask* mask);
+int APS5_VABI scePthreadAttrSetaffinity(PthreadAttr* attr, KernelCpumask mask);
+KernelCpumask APS5_VABI sceKernelGetAvailableCpumask(void);
 }
+
+static constexpr std::size_t GUEST_CPUSET_BYTES = 32;
+static constexpr int GUEST_ERANGE = 34;
+static constexpr int GUEST_EDEADLK = 11;
 
 static bool Valid(const PthreadAttr* attr) {
     return attr && *attr;
@@ -150,6 +158,29 @@ int APS5_VABI pthread_attr_setstack_nid_postfix(PthreadAttr* attr, void* stack_a
 int APS5_VABI pthread_attr_setsolosched_np_nid_postfix(PthreadAttr* attr, int solosched) {
     if (!Valid(attr)) return PosixThread::GUEST_EINVAL;
     return PosixThread::ToErrno(scePthreadAttrSetsolosched(attr, solosched));
+}
+
+int APS5_VABI pthread_attr_getaffinity_np_nid_postfix(const PthreadAttr* attr, std::size_t cpusetSize, void* cpuset) {
+    if (!Valid(attr)) return PosixThread::GUEST_EINVAL;
+    if (cpusetSize != GUEST_CPUSET_BYTES) return GUEST_ERANGE;
+    if (!cpuset) return PosixThread::GUEST_EFAULT;
+    KernelCpumask mask = 0;
+    const int result = scePthreadAttrGetaffinity(attr, &mask);
+    if (result != 0) return PosixThread::ToErrno(result);
+    std::memset(cpuset, 0, GUEST_CPUSET_BYTES);
+    std::memcpy(cpuset, &mask, sizeof(mask));
+    return 0;
+}
+
+int APS5_VABI pthread_attr_setaffinity_np_nid_postfix(PthreadAttr* attr, std::size_t cpusetSize, const void* cpuset) {
+    if (!Valid(attr)) return PosixThread::GUEST_EINVAL;
+    if (cpusetSize != GUEST_CPUSET_BYTES) return GUEST_ERANGE;
+    if (!cpuset) return PosixThread::GUEST_EFAULT;
+    KernelCpumask requested = 0;
+    std::memcpy(&requested, cpuset, sizeof(requested));
+    const KernelCpumask affinity = requested & sceKernelGetAvailableCpumask();
+    if (affinity == 0) return GUEST_EDEADLK;
+    return PosixThread::ToErrno(scePthreadAttrSetaffinity(attr, affinity));
 }
 
 }

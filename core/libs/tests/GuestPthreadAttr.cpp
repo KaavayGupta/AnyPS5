@@ -1,6 +1,8 @@
 #include "SceTypes.hpp"
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <future>
 
 extern "C" {
@@ -27,6 +29,8 @@ int APS5_VABI pthread_attr_setinheritsched_nid_postfix(PthreadAttr* attr, int in
 int APS5_VABI pthread_attr_getscope_nid_postfix(const PthreadAttr* attr, int* scope);
 int APS5_VABI pthread_attr_setscope_nid_postfix(PthreadAttr* attr, int scope);
 int APS5_VABI pthread_attr_get_np_nid_postfix(Pthread thread, PthreadAttr* attr);
+int APS5_VABI pthread_attr_getaffinity_np_nid_postfix(const PthreadAttr* attr, std::size_t cpusetSize, void* cpuset);
+int APS5_VABI pthread_attr_setaffinity_np_nid_postfix(PthreadAttr* attr, std::size_t cpusetSize, const void* cpuset);
 }
 
 static constexpr int SCE_OK = 0;
@@ -114,6 +118,52 @@ static void CheckSoloSched() {
     Require(scePthreadAttrGetsolosched(&unset, &soloSched) == SCE_KERNEL_ERROR_EINVAL);
     Require(scePthreadAttrDestroy(&attr) == SCE_OK);
     Require(pthread_attr_setsolosched_np_nid_postfix(&attr, 1) == GUEST_EINVAL);
+}
+
+static void CheckAffinity() {
+    PthreadAttr attr = nullptr;
+    std::uint8_t cpuset[32] = {};
+    Require(pthread_attr_getaffinity_np_nid_postfix(nullptr, sizeof(cpuset), cpuset) == GUEST_EINVAL);
+    Require(pthread_attr_setaffinity_np_nid_postfix(nullptr, sizeof(cpuset), cpuset) == GUEST_EINVAL);
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == GUEST_EINVAL);
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == GUEST_EINVAL);
+
+    Require(scePthreadAttrInit(&attr) == SCE_OK);
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset) - 1, cpuset) == 34);
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset) + 1, cpuset) == 34);
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset) - 1, cpuset) == 34);
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset) + 1, cpuset) == 34);
+
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset), nullptr) == 14);
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset), nullptr) == 14);
+
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == 0);
+    KernelCpumask reported = 0;
+    std::memcpy(&reported, cpuset, sizeof(reported));
+    Require(reported == 0x1FFF);
+
+    KernelCpumask requested = 0x5;
+    std::memset(cpuset, 0, sizeof(cpuset));
+    std::memcpy(cpuset, &requested, sizeof(requested));
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == 0);
+
+    std::memset(cpuset, 0, sizeof(cpuset));
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == 0);
+    reported = 0;
+    std::memcpy(&reported, cpuset, sizeof(reported));
+    Require(reported == requested);
+
+    KernelCpumask direct = 0;
+    Require(scePthreadAttrGetaffinity(&attr, &direct) == SCE_OK && direct == requested);
+
+    KernelCpumask impossible = 0x20000;
+    std::memset(cpuset, 0, sizeof(cpuset));
+    std::memcpy(cpuset, &impossible, sizeof(impossible));
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == 11);
+
+    Require(scePthreadAttrDestroy(&attr) == SCE_OK);
+    Require(pthread_attr_getaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == GUEST_EINVAL);
+    Require(pthread_attr_setaffinity_np_nid_postfix(&attr, sizeof(cpuset), cpuset) == GUEST_EINVAL);
 }
 
 static void* APS5_VABI Worker(void* arg) {
@@ -220,6 +270,7 @@ static void CheckThreadScope() {
 int main() {
     CheckStackSizeLimit();
     CheckSoloSched();
+    CheckAffinity();
     CheckSchedulingAttributes();
     CheckThreadScope();
     PthreadAttr attr = nullptr;
